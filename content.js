@@ -115,10 +115,10 @@ function scrapeTranscriptText(transcriptPanel) {
     });
 
     // Add visible watermark with repo link
-    transcriptText += "\n--\nTranscribed by YouTube Transcript Extractor\nhttps://github.com/jules/youtube-transcript-extractor";
+    transcriptText += "\n--\nTranscribed by YouTube Transcript Extractor\nhttps://github.com/pavnxet/Yt-transcripter";
 
     // Add hidden watermark (console log)
-    console.log("Transcript extracted by YouTube Transcript Extractor (https://github.com/jules/youtube-transcript-extractor)");
+    console.log("Transcript extracted by YouTube Transcript Extractor (https://github.com/pavnxet/Yt-transcripter)");
 
     return transcriptText;
 }
