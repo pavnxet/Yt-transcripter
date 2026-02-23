@@ -74,19 +74,17 @@ async function fetchTranscript(apiKey, context, videoId) {
         }
 
         // Prioritize manually uploaded transcripts (not kind='asr')
-        captions.sort((a, b) => {
-            const aIsAsr = a.kind === 'asr';
-            const bIsAsr = b.kind === 'asr';
+        let bestTrack = captions.find(track => track.kind !== 'asr');
 
-            if (aIsAsr && !bIsAsr) return 1;
-            if (!aIsAsr && bIsAsr) return -1;
+        // Fallback to ASR if no manual track is found
+        if (!bestTrack) {
+            bestTrack = captions.find(track => track.kind === 'asr');
+        }
 
-            // Prefer English if multiple manual tracks exist?
-            // For now, stable sort (or original order which usually puts default first)
-            return 0;
-        });
-
-        const bestTrack = captions[0];
+        // If still no track found (unlikely if captions array is not empty), use the first one
+        if (!bestTrack) {
+            bestTrack = captions[0];
+        }
         const trackUrl = bestTrack.baseUrl;
 
         if (!trackUrl) {
