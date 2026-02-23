@@ -1,18 +1,8 @@
 // content.js
 
-function injectScript(file) {
-    const s = document.createElement('script');
-    s.setAttribute('type', 'text/javascript');
-    s.setAttribute('src', chrome.runtime.getURL(file));
-    (document.head || document.documentElement).appendChild(s);
-    s.onload = function() {
-        s.remove();
-    };
-}
-
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "EXTRACT_TRANSCRIPT") {
-        handleExtraction().then(sendResponse).catch((err) => {
+        extractTranscriptFromDom().then(sendResponse).catch((err) => {
             console.error(err);
             sendResponse({ status: "error", message: err.message });
         });
@@ -20,123 +10,109 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-function handleExtraction() {
+function extractTranscriptFromDom() {
     return new Promise((resolve, reject) => {
-        const listener = (event) => {
-            if (event.source !== window) return;
-            if (event.data.type && event.data.type === "YT_DATA_RESPONSE") {
-                window.removeEventListener("message", listener);
-                const data = event.data.payload;
-                if (!data) {
-                    reject(new Error("Failed to extract YouTube data. Make sure you are on a video page."));
-                    return;
-                }
+        const playlistPanel = document.querySelector('ytd-playlist-panel-renderer#playlist');
 
-                fetchTranscript(data.apiKey, data.context, data.videoId)
-                    .then(transcript => resolve({ status: "success", data: transcript, title: document.title.replace(" - YouTube", "") }))
-                    .catch(reject);
+        // Function to restore UI state
+        function cleanupUI() {
+            if (playlistPanel) {
+                playlistPanel.style.display = '';
             }
+        }
+
+        // Temporarily hide playlist panel if present
+        if (playlistPanel) {
+            playlistPanel.style.display = 'none';
+        }
+
+        const moreActionsButton = document.querySelector('button[aria-label="More actions"]');
+        if (!moreActionsButton) {
+            // Try to find the button again, maybe it's under a different selector or requires interaction?
+            // But for now, fail.
+            cleanupUI();
+            reject(new Error("Could not find 'More actions' button."));
+            return;
+        }
+
+        moreActionsButton.click();
+
+        // The userscript logic
+        let transcriptButtonTimeout;
+        let transcriptPanelTimeout;
+        let panelIntervalId;
+        let buttonIntervalId;
+
+        const clearAll = () => {
+            clearInterval(buttonIntervalId);
+            clearTimeout(transcriptButtonTimeout);
+            clearInterval(panelIntervalId);
+            clearTimeout(transcriptPanelTimeout);
         };
 
-        window.addEventListener("message", listener);
+        buttonIntervalId = setInterval(() => {
+            const transcriptButton = document.querySelector('[aria-label="Show transcript"]');
 
-        injectScript("injected.js");
+            if (transcriptButton) {
+                transcriptButton.click();
+                clearInterval(buttonIntervalId);
+                clearTimeout(transcriptButtonTimeout);
 
-        // Dispatch event after a short delay to allow script to load and execute
-        setTimeout(() => {
-            window.postMessage({ type: "YT_EXTRACT_REQUEST" }, "*");
-        }, 100);
+                panelIntervalId = setInterval(() => {
+                    const transcriptPanel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"] #content');
+
+                    if (transcriptPanel && transcriptPanel.querySelector('ytd-transcript-segment-renderer')) {
+                        clearAll();
+
+                        try {
+                            const result = scrapeTranscriptText(transcriptPanel);
+                            cleanupUI();
+                            resolve({
+                                status: "success",
+                                data: result,
+                                title: document.title.replace(" - YouTube", "")
+                            });
+                        } catch (e) {
+                            cleanupUI();
+                            reject(e);
+                        }
+                    }
+                }, 100);
+
+                transcriptPanelTimeout = setTimeout(() => {
+                    clearAll();
+                    cleanupUI();
+                    reject(new Error("Transcript panel or segments not found after timeout."));
+                }, 15000);
+            }
+        }, 250);
+
+        transcriptButtonTimeout = setTimeout(() => {
+            clearAll();
+            cleanupUI();
+            // If "Show transcript" isn't found, maybe it's already open?
+            // Or maybe there are no captions.
+            reject(new Error("Transcript button not found after timeout."));
+        }, 10000);
     });
 }
 
-async function fetchTranscript(apiKey, context, videoId) {
-    try {
-        const response = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                context: context,
-                videoId: videoId
-            })
-        });
+function scrapeTranscriptText(transcriptPanel) {
+    let transcriptText = "";
+    const lines = transcriptPanel.querySelectorAll('ytd-transcript-segment-renderer');
 
-        if (!response.ok) {
-            throw new Error(`Player API request failed: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const captions = data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-        if (!captions || captions.length === 0) {
-            throw new Error("No captions found for this video.");
-        }
-
-        // Prioritize manually uploaded transcripts (not kind='asr')
-        let bestTrack = captions.find(track => track.kind !== 'asr');
-
-        // Fallback to ASR if no manual track is found
-        if (!bestTrack) {
-            bestTrack = captions.find(track => track.kind === 'asr');
-        }
-
-        // If still no track found (unlikely if captions array is not empty), use the first one
-        if (!bestTrack) {
-            bestTrack = captions[0];
-        }
-        const trackUrl = bestTrack.baseUrl;
-
-        if (!trackUrl) {
-            throw new Error("Caption track URL not found.");
-        }
-
-        const transcriptResponse = await fetch(trackUrl);
-        const transcriptText = await transcriptResponse.text();
-
-        return parseTranscript(transcriptText);
-    } catch (e) {
-        console.error("Error fetching transcript:", e);
-        throw e;
-    }
-}
-
-function parseTranscript(xmlString) {
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlString, "text/xml");
-    const textNodes = xmlDoc.getElementsByTagName("text");
-
-    let formattedTranscript = "";
-
-    for (let i = 0; i < textNodes.length; i++) {
-        const node = textNodes[i];
-        const start = parseFloat(node.getAttribute("start"));
-        let text = node.textContent;
-
-        // Replace newlines with spaces to keep it on one line per timestamp
-        text = text.replace(/\n/g, " ");
-
-        formattedTranscript += `${formatTime(start)} ${decodeHTMLEntities(text)}\n`;
+    if (!lines || lines.length === 0) {
+        throw new Error("No transcript lines found.");
     }
 
-    return formattedTranscript;
-}
+    lines.forEach(line => {
+        const timestampElement = line.querySelector('.segment-timestamp');
+        const textElement = line.querySelector('.segment-text');
 
-function formatTime(seconds) {
-    if (isNaN(seconds)) return "[00:00]";
+        if (timestampElement && textElement) {
+            transcriptText += timestampElement.textContent.trim() + " " + textElement.textContent.trim() + "\n";
+        }
+    });
 
-    const date = new Date(0);
-    date.setSeconds(seconds);
-    const timeString = date.toISOString().substr(11, 8);
-
-    if (timeString.startsWith("00:")) {
-        return `[${timeString.substr(3)}]`;
-    }
-    return `[${timeString}]`;
-}
-
-function decodeHTMLEntities(text) {
-    const txt = document.createElement("textarea");
-    txt.innerHTML = text;
-    return txt.value;
+    return transcriptText;
 }

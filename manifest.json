@@ -22,15 +22,5 @@
         "content.js"
       ]
     }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "injected.js"
-      ],
-      "matches": [
-        "*://*.youtube.com/*"
-      ]
-    }
   ]
 }
